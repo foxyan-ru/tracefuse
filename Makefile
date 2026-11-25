@@ -1,4 +1,4 @@
-.PHONY: build test demo verify-demo guest bench clean
+.PHONY: build test demo verify-demo guest host-check bench clean
 build:
 	go build -o bin/tracefuse ./cmd/tracefuse
 test:
@@ -7,6 +7,8 @@ demo: build
 	./scripts/demo.sh
 verify-demo:
 	./scripts/verify-demo.sh demo.log
+host-check:
+	./scripts/check-host.sh
 guest:
 	./guest/build-rootfs.sh
 bench: build

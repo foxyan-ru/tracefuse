@@ -23,7 +23,9 @@ KVM. The local backend shares your kernel and is **not a security boundary**.
 BASE_ROOTFS=ubuntu.ext4 KERNEL=vmlinux make guest
 # 2. host TAP device, no NAT
 ./scripts/setup-tap.sh tf0
-# 3. demo: the guest calls the mock API on the TAP gateway
+# 3. read-only preflight: KVM, kernel .BTF, rootfs, TAP, tools
+make host-check
+# 4. demo: the guest calls the mock API on the TAP gateway
 TF_BACKEND=firecracker TF_TAP=tf0 make demo
 ```
 
@@ -71,7 +73,10 @@ docs/                   architecture and threat model
    the controller treats everything from the guest as untrusted input.
 6. seccomp: dangerous syscalls (ptrace, bpf, mount, kexec, module loading,
    unshare/setns...) are refused in every mode; in enforce mode only syscalls
-   eBPF saw during the approved observe run are allowed (default EPERM).
+   eBPF saw during the approved observe run are allowed (default EPERM), plus
+   a small fixed set for signals, memory and a clean shutdown. `TF_SECCOMP_STRICT=1`
+   removes that runtime set; `TF_REQUIRE_SECCOMP=1` fails closed (exit 126) when
+   libseccomp is missing or the learned allowlist is empty.
    An OCI-style `seccomp.json` is generated with every enforced run.
 
 ## Not yet (roadmap weeks 6-8)

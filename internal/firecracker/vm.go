@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 )
 
@@ -35,6 +36,9 @@ type VM struct {
 	console *io.PipeReader
 	pw      *io.PipeWriter
 	http    *http.Client
+
+	waitOnce sync.Once
+	waitErr  error
 }
 
 func New(cfg Config) *VM {
@@ -53,9 +57,11 @@ func (v *VM) Start(ctx context.Context) error {
 	v.cmd = exec.Command(v.cfg.Binary, "--api-sock", v.cfg.SocketPath)
 	v.cmd.Stdout, v.cmd.Stderr = v.pw, v.pw
 	if err := v.cmd.Start(); err != nil {
+		_ = v.pw.Close()
 		return err
 	}
 	if err := waitForSocket(ctx, v.cfg.SocketPath, 3*time.Second); err != nil {
+		v.Destroy()
 		return err
 	}
 	v.http = &http.Client{
@@ -83,26 +89,50 @@ func (v *VM) Start(ctx context.Context) error {
 	}
 	for _, s := range steps {
 		if err := v.call(ctx, http.MethodPut, s.path, s.body); err != nil {
+			v.Destroy()
 			return err
 		}
 	}
-	return v.call(ctx, http.MethodPut, "/actions", map[string]any{"action_type": "InstanceStart"})
+	if err := v.call(ctx, http.MethodPut, "/actions", map[string]any{"action_type": "InstanceStart"}); err != nil {
+		v.Destroy()
+		return err
+	}
+	return nil
 }
 
 // Wait blocks until the Firecracker process exits (guest reboot=k exits it).
+// It is safe to call more than once; the process is reaped only once.
 func (v *VM) Wait() error {
-	err := v.cmd.Wait()
-	v.pw.Close()
-	return err
+	v.waitOnce.Do(func() {
+		if v.cmd != nil {
+			v.waitErr = v.cmd.Wait()
+		}
+		if v.pw != nil {
+			_ = v.pw.Close()
+		}
+	})
+	return v.waitErr
 }
 
-// Destroy kills the VMM and removes its socket. Safe to call more than once.
+// Destroy kills the VMM, reaps it and removes its socket. It is idempotent and
+// bounded: a stuck process cannot block teardown for more than five seconds.
 func (v *VM) Destroy() {
 	if v.cmd != nil && v.cmd.Process != nil {
 		_ = v.cmd.Process.Kill()
 	}
 	if v.pw != nil {
-		v.pw.Close()
+		_ = v.pw.Close()
+	}
+	if v.cmd != nil {
+		done := make(chan struct{})
+		go func() {
+			_ = v.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
 	}
 	_ = os.Remove(v.cfg.SocketPath)
 }

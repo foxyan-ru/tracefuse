@@ -181,49 +181,94 @@ def hook(name, args):
         _busy = False
 
 
-# Syscalls needed to finish cleanly even if the learn run never reached them.
-ALWAYS_ALLOW = ["exit", "exit_group", "rt_sigreturn", "rt_sigprocmask", "write", "close", "futex", "munmap"]
+# Minimal allowlist for a clean interpreter shutdown. These are needed after
+# the workload returns, when no further learning is possible.
+ALWAYS_ALLOW = ["exit", "exit_group", "rt_sigreturn", "rt_sigprocmask",
+                "write", "close", "futex", "munmap", "clock_gettime", "getpid"]
+
+# Benign runtime syscalls Python can reach on paths the observe run may not
+# have taken (signals, timers, memory growth). They do not bypass the
+# action-level policy: the audit hook still decides files/processes. Network
+# syscalls are deliberately absent: they must be learned, and nftables is the
+# backstop. TF_SECCOMP_STRICT=1 removes this set.
+RUNTIME_ALLOW = [
+    "read", "mmap", "mprotect", "madvise", "brk", "mremap",
+    "newfstatat", "fstat", "statx", "lseek", "fcntl", "ioctl", "getdents64",
+    "rt_sigaction", "sigaltstack", "tgkill", "gettid", "getuid", "geteuid",
+    "getgid", "getegid", "getcwd", "readlink", "readlinkat", "access", "faccessat",
+    "getrandom", "clock_nanosleep", "nanosleep",
+    "poll", "ppoll", "select", "pselect6", "epoll_create1", "epoll_ctl", "epoll_wait",
+    "pipe2", "dup", "dup2", "wait4", "prlimit64", "arch_prctl",
+    "set_tid_address", "set_robust_list", "rseq",
+    "sched_getaffinity", "sched_yield", "uname", "sysinfo",
+]
 
 
 def apply_seccomp():
     """Kernel-level syscall filter (libseccomp; python3-seccomp in the guest).
 
     observe: default ALLOW, baseline dangerous syscalls -> EPERM.
-    enforce: default EPERM, only learned + ALWAYS_ALLOW syscalls pass.
+    enforce: default EPERM, only learned + ALWAYS_ALLOW + RUNTIME_ALLOW pass.
     Applied after imports and before the workload runs; it can never be lifted
     (libseccomp sets no_new_privs).
     """
     sc = (_policy or {}).get("syscalls") or {}
     deny = sc.get("deny") or []
-    allow = sc.get("allow") or []
+    allow = [int(n) for n in (sc.get("allow") or [])]
+    required = os.environ.get("TF_REQUIRE_SECCOMP") == "1"
+    strict = os.environ.get("TF_SECCOMP_STRICT") == "1"
+
+    # In the guest, an enforce run without learned syscalls would silently
+    # fall back to a permissive filter. Refuse instead.
+    if MODE == "enforce" and required and not allow:
+        print("TraceFuse: enforce mode has no learned syscalls; refusing to run", file=sys.stderr)
+        sys.exit(126)
+
     try:
         import seccomp
     except ImportError:
-        if os.environ.get("TF_REQUIRE_SECCOMP") == "1":
+        if required:
             print("TraceFuse: seccomp required but python3-seccomp is missing", file=sys.stderr)
             sys.exit(126)
         print("TraceFuse: seccomp unavailable here, skipping (dev backend)", file=sys.stderr)
         return
-    if MODE == "enforce" and allow:
-        f = seccomp.SyscallFilter(defaction=seccomp.ERRNO(errno.EPERM))
-        for nr in allow:
-            f.add_rule(seccomp.ALLOW, int(nr))
-        for name in ALWAYS_ALLOW:
-            f.add_rule(seccomp.ALLOW, name)
-    else:
-        f = seccomp.SyscallFilter(defaction=seccomp.ALLOW)
-        for name in deny or ["ptrace", "mount", "bpf", "kexec_load", "init_module", "finit_module", "unshare", "setns"]:
-            try:
-                f.add_rule(seccomp.ERRNO(errno.EPERM), name)
-            except Exception:
-                pass
-    f.load()
+
+    try:
+        if MODE == "enforce" and allow:
+            f = seccomp.SyscallFilter(defaction=seccomp.ERRNO(errno.EPERM))
+            for nr in allow:
+                try:
+                    f.add_rule(seccomp.ALLOW, nr)
+                except Exception:
+                    pass
+            extra = ALWAYS_ALLOW if strict else ALWAYS_ALLOW + RUNTIME_ALLOW
+            for name in extra:
+                try:
+                    f.add_rule(seccomp.ALLOW, name)
+                except Exception:
+                    pass
+        else:
+            f = seccomp.SyscallFilter(defaction=seccomp.ALLOW)
+            for name in deny or ["ptrace", "mount", "bpf", "kexec_load", "init_module", "finit_module", "unshare", "setns"]:
+                try:
+                    f.add_rule(seccomp.ERRNO(errno.EPERM), name)
+                except Exception:
+                    pass
+        f.load()
+    except Exception as e:
+        if required:
+            print("TraceFuse: seccomp setup failed: %s" % e, file=sys.stderr)
+            sys.exit(126)
+        print("TraceFuse: seccomp unavailable here, skipping (dev backend): %s" % e, file=sys.stderr)
 
 
 def main():
     if len(sys.argv) < 2:
         print("usage: tracer.py <script>", file=sys.stderr)
         return 2
+    if MODE == "enforce" and _policy is None:
+        print("TraceFuse: enforce mode without a policy; refusing to run", file=sys.stderr)
+        return 126
     script = os.path.abspath(sys.argv[1])
     mem = os.environ.get("TF_MEMORY_MB")
     if mem and sys.platform.startswith("linux"):

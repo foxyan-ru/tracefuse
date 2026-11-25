@@ -1,45 +1,82 @@
 #!/bin/sh
 # PID 1 inside the TraceFuse microVM.
 # 1. mount pseudo filesystems and the workspace drive
-# 2. (enforce) load nftables allowlist from the controller
+# 2. (enforce) refuse to run unless the policy, nftables rules and cgroup
+#    limits are present; a missing artifact is a failed sandbox, not a warning
 # 3. start the eBPF observer, run the workload in a limited cgroup
 # 4. stream results over ttyS0 and power off (Firecracker exits on reboot=k)
 set -u
-mount -t proc proc /proc
-mount -t sysfs sys /sys
+
+fail() {
+  echo "TFOUT TraceFuse refused to run: $*"
+  echo "TFEXIT 126"
+  sync
+  reboot -f
+  exit 0
+}
+
+mount -t proc proc /proc || fail "proc did not mount"
+mount -t sysfs sys /sys || fail "sysfs did not mount"
 mount -t devtmpfs dev /dev 2>/dev/null
-mount -t tmpfs -o size=64m,mode=1777 tmpfs /tmp
-mount -t cgroup2 none /sys/fs/cgroup
+mount -t tmpfs -o size=64m,mode=1777 tmpfs /tmp || fail "tmpfs did not mount"
+mount -t cgroup2 none /sys/fs/cgroup || fail "cgroup v2 did not mount"
 mount -t debugfs none /sys/kernel/debug 2>/dev/null
 mount -t tracefs none /sys/kernel/tracing 2>/dev/null
-mkdir -p /workspace && mount /dev/vdb /workspace
+
+mkdir -p /workspace
+mount /dev/vdb /workspace || fail "workspace drive /dev/vdb did not mount"
 
 TF=/workspace/.tracefuse
-MODE=$(cat $TF/mode 2>/dev/null || echo observe)
-MOCK_HOST=$(cat $TF/mock_host 2>/dev/null || echo 127.0.0.1)
+MODE=$(cat "$TF/mode" 2>/dev/null || echo observe)
+MOCK_HOST=$(cat "$TF/mock_host" 2>/dev/null || echo 127.0.0.1)
 emit() { while IFS= read -r l; do echo "TFEVT $l"; done; }
 
-ip link set lo up
+ip link set lo up || true
 if [ -e /sys/class/net/eth0 ]; then
-  ip addr add 172.16.0.2/30 dev eth0 && ip link set eth0 up && ip route add default via 172.16.0.1
+  ip addr add 172.16.0.2/30 dev eth0 || true
+  ip link set eth0 up || true
+  ip route add default via 172.16.0.1 || true
 fi
-[ -f $TF/hosts ] && cat $TF/hosts >> /etc/hosts
+[ -f "$TF/hosts" ] && cat "$TF/hosts" >> /etc/hosts
+
 if [ "$MODE" = "enforce" ]; then
-  nft -f $TF/nft.rules || { echo "TFOUT nftables failed: refusing to run"; echo "TFEXIT 126"; reboot -f; }
+  [ -f "$TF/policy.json" ] || fail "enforce mode without policy.json"
+  [ -f "$TF/nft.rules" ] || fail "enforce mode without nft.rules"
+  command -v nft >/dev/null 2>&1 || fail "nft is missing from the guest image"
+  nft -f "$TF/nft.rules" || fail "nftables ruleset did not load"
 fi
 
-# Workload cgroup: memory/pids limits + the filter key for the eBPF observer.
-echo "+memory +pids" > /sys/fs/cgroup/cgroup.subtree_control
-mkdir -p /sys/fs/cgroup/workload
-echo 200M > /sys/fs/cgroup/workload/memory.max
-echo 64 > /sys/fs/cgroup/workload/pids.max
+# Resource limits are part of the contract: without them, fail closed.
+[ -f /sys/fs/cgroup/cgroup.controllers ] || fail "cgroup v2 is not available"
+grep -qw memory /sys/fs/cgroup/cgroup.controllers || fail "cgroup memory controller is missing"
+grep -qw pids /sys/fs/cgroup/cgroup.controllers || fail "cgroup pids controller is missing"
+echo "+memory +pids" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+mkdir -p /sys/fs/cgroup/workload || fail "cannot create the workload cgroup"
+echo 200M > /sys/fs/cgroup/workload/memory.max || fail "cannot set memory.max"
+echo 64 > /sys/fs/cgroup/workload/pids.max || fail "cannot set pids.max"
 
-bpftrace -B line /opt/tracefuse/observer.bt 2>/dev/null | emit &
-OBS=$!
-sleep 1   # let probes attach before the workload starts
+# The agent appends JSONL here; create it even if the workload never starts.
+: > /tmp/.tf-agent.jsonl
+
+OBS=""
+if command -v bpftrace >/dev/null 2>&1; then
+  BFLAG=""
+  bpftrace --help 2>&1 | grep -q -- '-B' && BFLAG="-B line"
+  # shellcheck disable=SC2086
+  bpftrace $BFLAG /opt/tracefuse/observer.bt 2>/dev/null | emit &
+  OBS=$!
+  sleep 1
+  if ! kill -0 "$OBS" 2>/dev/null; then
+    echo "TFOUT eBPF observer did not attach; continuing with audit + nftables"
+    OBS=""
+  fi
+else
+  echo "TFOUT bpftrace is missing; continuing with audit + nftables"
+fi
 
 POLICY=""
-[ -f $TF/policy.json ] && POLICY=$TF/policy.json
+[ -f "$TF/policy.json" ] && POLICY="$TF/policy.json"
+
 sh -c 'echo $$ > /sys/fs/cgroup/workload/cgroup.procs; exec "$@"' _ \
   env -i PATH=/usr/bin:/bin HOME=/tmp TMPDIR=/tmp \
       TF_MODE="$MODE" TF_POLICY="$POLICY" TF_WORKSPACE=/workspace TF_TMP=/tmp \
@@ -47,7 +84,7 @@ sh -c 'echo $$ > /sys/fs/cgroup/workload/cgroup.procs; exec "$@"' _ \
   python3 -I -B /opt/tracefuse/tracer.py /workspace/main.py > /tmp/.tf-out 2>&1
 RC=$?
 
-sleep 1; kill $OBS 2>/dev/null
+[ -n "$OBS" ] && kill "$OBS" 2>/dev/null || true
 emit < /tmp/.tf-agent.jsonl
 sed 's/^/TFOUT /' /tmp/.tf-out
 echo "TFEXIT $RC"
