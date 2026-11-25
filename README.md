@@ -10,6 +10,7 @@ An adaptive Firecracker sandbox for AI-generated workloads.
 ```bash
 make test        # unit tests: policy proposal, evaluation, diff, console protocol
 make demo        # observe -> approve -> enforce -> attack blocked -> diff
+make demo 2>&1 | tee demo.log && make verify-demo   # assert the security claims
 ```
 
 The demo uses the **local** backend so you can work on the policy loop without
@@ -22,10 +23,15 @@ KVM. The local backend shares your kernel and is **not a security boundary**.
 BASE_ROOTFS=ubuntu.ext4 KERNEL=vmlinux make guest
 # 2. host TAP device, no NAT
 ./scripts/setup-tap.sh tf0
-# 3. mock API on the TAP address, then point demos/useful.py at 172.16.0.1
-python3 demos/mock_server.py 172.16.0.1 &
+# 3. demo: the guest calls the mock API on the TAP gateway
 TF_BACKEND=firecracker TF_TAP=tf0 make demo
 ```
+
+With the firecracker backend the demo sets `TF_MOCK_HOST=172.16.0.1` so the
+workload calls the host over the TAP device. A private address is only learned
+because the operator passes it explicitly (`--trusted-hosts`, or
+`TF_TRUSTED_HOSTS`). Cloud metadata and other link-local endpoints are never
+learned, trusted or not.
 
 ## Commands
 
@@ -56,6 +62,8 @@ docs/                   architecture and threat model
 
 1. Observation never grants permission. Findings (metadata IPs, private ranges,
    shells, sensitive files, privilege changes) are excluded from proposals.
+   Private ranges stay excluded unless the operator allowlists a specific
+   host:port (`--trusted-hosts`, used for the Firecracker TAP gateway).
 2. Enforce mode refuses unapproved policies.
 3. Baseline deny applies in every mode (metadata endpoints, `/etc/shadow`, ...).
 4. Network enforcement in the guest fails closed (nftables `policy drop`).

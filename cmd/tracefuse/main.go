@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/tracefuse/tracefuse/internal/diff"
@@ -81,6 +82,8 @@ func cmdRun(args []string) error {
 	kernel := fs.String("kernel", envOr("TF_KERNEL", "guest/out/vmlinux"), "guest kernel")
 	rootfs := fs.String("rootfs", envOr("TF_ROOTFS", "guest/out/rootfs.ext4"), "guest rootfs image")
 	tap := fs.String("tap", envOr("TF_TAP", ""), "host TAP device for guest networking (empty = no network)")
+	mockHost := fs.String("mock-host", envOr("TF_MOCK_HOST", "127.0.0.1"), "address the demo workload calls (mock API)")
+	trusted := fs.String("trusted-hosts", envOr("TF_TRUSTED_HOSTS", ""), "comma-separated hosts that may be learned even when private (e.g. TAP gateway)")
 	python := fs.String("python", envOr("TF_PYTHON", "python3"), "python interpreter (local backend)")
 	_ = fs.Parse(args)
 
@@ -115,6 +118,7 @@ func cmdRun(args []string) error {
 
 	be, err := sandbox.New(*backend, sandbox.Options{
 		Python: *python, FirecrackerBin: *fcBin, Kernel: *kernel, Rootfs: *rootfs, Tap: *tap,
+		MockHost: *mockHost,
 	})
 	if err != nil {
 		return err
@@ -141,7 +145,9 @@ func cmdRun(args []string) error {
 	}
 
 	if *mode == "observe" {
-		p, findings := policy.Propose(tr)
+		p, findings := policy.ProposeWith(tr, policy.ProposeOptions{
+			TrustedDestinations: splitList(*trusted),
+		})
 		p.ID = store.PolicyIDFor(tr.ID)
 		if err := st.SavePolicy(p); err != nil {
 			return err
@@ -231,4 +237,15 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// splitList accepts comma- or space-separated values and drops blanks.
+func splitList(s string) []string {
+	var out []string
+	for _, v := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' }) {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }

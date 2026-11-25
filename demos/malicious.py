@@ -1,9 +1,12 @@
 # Same useful work, plus three things an injected or confused agent might do.
 import json
+import os
 import subprocess
 import urllib.request
 
-with urllib.request.urlopen("http://127.0.0.1:8080/data", timeout=3) as r:
+host = os.environ.get("TF_MOCK_HOST", "127.0.0.1")
+
+with urllib.request.urlopen("http://%s:8080/data" % host, timeout=3) as r:
     print(json.load(r)["items"][:5])
 
 try:

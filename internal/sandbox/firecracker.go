@@ -25,7 +25,7 @@ import (
 //	... TFBLOCK    kernel log line from an nftables drop
 //
 // Everything from the guest is treated as untrusted input.
-type fcBackend struct{ bin, kernel, rootfs, tap string }
+type fcBackend struct{ bin, kernel, rootfs, tap, mockHost string }
 
 func (b *fcBackend) Run(ctx context.Context, job Job) (*trace.Trace, error) {
 	root, err := os.MkdirTemp("", "tracefuse-fc-"+job.ID+"-")
@@ -43,6 +43,11 @@ func (b *fcBackend) Run(ctx context.Context, job Job) (*trace.Trace, error) {
 		return nil, err
 	}
 	if err := os.WriteFile(filepath.Join(meta, "mode"), []byte(job.Mode), 0o644); err != nil {
+		return nil, err
+	}
+	// The guest has no DHCP or DNS: the workload is told which host address
+	// the mock API (or other allowed local service) lives on.
+	if err := os.WriteFile(filepath.Join(meta, "mock_host"), []byte(mockHostOr(b.mockHost)), 0o644); err != nil {
 		return nil, err
 	}
 	if job.Policy != nil {

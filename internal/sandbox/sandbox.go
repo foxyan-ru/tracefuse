@@ -32,6 +32,7 @@ type Options struct {
 	Kernel         string
 	Rootfs         string
 	Tap            string
+	MockHost       string
 }
 
 // New returns a backend by name.
@@ -41,11 +42,18 @@ type Options struct {
 func New(name string, o Options) (Backend, error) {
 	switch name {
 	case "local":
-		return &localBackend{python: o.Python}, nil
+		return &localBackend{python: o.Python, mockHost: o.MockHost}, nil
 	case "firecracker":
-		return &fcBackend{bin: o.FirecrackerBin, kernel: o.Kernel, rootfs: o.Rootfs, tap: o.Tap}, nil
+		return &fcBackend{bin: o.FirecrackerBin, kernel: o.Kernel, rootfs: o.Rootfs, tap: o.Tap, mockHost: o.MockHost}, nil
 	}
 	return nil, fmt.Errorf("unknown backend %q", name)
+}
+
+func mockHostOr(h string) string {
+	if h == "" {
+		return "127.0.0.1"
+	}
+	return h
 }
 
 func copyFile(src, dst string) error {

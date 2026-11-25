@@ -73,6 +73,10 @@ jobs:
           set -o pipefail
           make demo 2>&1 | tee demo.log
 
+      - name: verify demo guarantees
+        if: always()
+        run: ./scripts/verify-demo.sh demo.log
+
       - name: demo evidence
         if: always()
         run: |

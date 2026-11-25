@@ -72,8 +72,23 @@ var (
 	metadata   = map[string]bool{"169.254.169.254": true, "fd00:ec2::254": true, "metadata.google.internal": true, "100.100.100.200": true}
 )
 
-// Propose builds a policy from an observe-mode trace.
+// ProposeOptions tunes what an observation run is allowed to learn.
+type ProposeOptions struct {
+	// TrustedDestinations are operator-allowlisted destinations that may be
+	// learned even when they resolve to a private range. The Firecracker
+	// backend uses this for its TAP gateway (for example 172.16.0.1).
+	// Entries are "host" or "host:port"; a bare host matches any port.
+	// Cloud metadata and other link-local endpoints are never trusted.
+	TrustedDestinations []string
+}
+
+// Propose builds a policy from an observe-mode trace with default options.
 func Propose(t *trace.Trace) (*Policy, []Finding) {
+	return ProposeWith(t, ProposeOptions{})
+}
+
+// ProposeWith builds a policy from an observe-mode trace.
+func ProposeWith(t *trace.Trace, opts ProposeOptions) (*Policy, []Finding) {
 	p := &Policy{SourceTrace: t.ID, CreatedAt: time.Now().UTC()}
 	p.Filesystem.Deny = append([]string(nil), BaselineDenyFiles...)
 	p.Processes.Deny = append([]string(nil), shellLike...)
@@ -128,11 +143,18 @@ func Propose(t *trace.Trace) (*Policy, []Finding) {
 			}
 		case trace.NetworkConnect, trace.DNS:
 			sev, why := ClassifyDestination(e.Destination)
-			switch sev {
-			case "critical", "high":
+			switch {
+			case sev == "critical":
+				// Metadata and link-local endpoints are never learnable,
+				// even when an operator lists them as trusted.
 				add(sev, "sensitive_destination", "%s -> %s: %s (excluded)", e.Process, e.Destination, why)
 				continue
-			case "low":
+			case sev == "high" && trustedDestination(e.Destination, opts.TrustedDestinations):
+				add("medium", "trusted_private_destination", "%s -> %s: %s (allowlisted by operator)", e.Process, e.Destination, why)
+			case sev == "high":
+				add(sev, "sensitive_destination", "%s -> %s: %s (excluded)", e.Process, e.Destination, why)
+				continue
+			case sev == "low":
 				add(sev, "local_destination", "%s -> %s: %s", e.Process, e.Destination, why)
 			}
 			dests[e.Destination] = true
@@ -223,6 +245,28 @@ func ClassifyDestination(dest string) (severity, reason string) {
 		return "high", "private network range"
 	}
 	return "", ""
+}
+
+// trustedDestination reports whether dest matches the operator trust list.
+// A bare host entry matches any port; "host:port" matches that port only.
+func trustedDestination(dest string, trusted []string) bool {
+	host, port, err := net.SplitHostPort(dest)
+	if err != nil {
+		host, port = dest, ""
+	}
+	for _, t := range trusted {
+		if t == "" {
+			continue
+		}
+		th, tp, err := net.SplitHostPort(t)
+		if err != nil {
+			th, tp = t, ""
+		}
+		if th == host && (tp == "" || tp == port) {
+			return true
+		}
+	}
+	return false
 }
 
 // Generalize turns a concrete path into a reviewable glob.

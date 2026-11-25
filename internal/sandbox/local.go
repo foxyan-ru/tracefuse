@@ -24,7 +24,10 @@ func TracerSource() []byte { return tracerSrc }
 // localBackend runs the workload as a host process under the Python audit-hook
 // tracer. Use it to develop the observe -> propose -> approve -> enforce loop
 // without KVM. It shares the host kernel: never run untrusted code with it.
-type localBackend struct{ python string }
+type localBackend struct {
+	python   string
+	mockHost string
+}
 
 func (l *localBackend) Run(ctx context.Context, job Job) (*trace.Trace, error) {
 	root, err := os.MkdirTemp("", "tracefuse-"+job.ID+"-")
@@ -53,6 +56,7 @@ func (l *localBackend) Run(ctx context.Context, job Job) (*trace.Trace, error) {
 		"PATH=" + os.Getenv("PATH"), "HOME=" + tmp, "TMPDIR=" + tmp, "LANG=C.UTF-8",
 		"TF_MODE=" + job.Mode, "TF_SANDBOX_ID=" + job.ID, "TF_EVENTS=" + events,
 		"TF_WORKSPACE=" + ws, "TF_TMP=" + tmp, fmt.Sprintf("TF_MEMORY_MB=%d", job.MemoryMB),
+		"TF_MOCK_HOST=" + mockHostOr(l.mockHost),
 	}
 	if job.Policy != nil {
 		pf := filepath.Join(root, "policy.json")

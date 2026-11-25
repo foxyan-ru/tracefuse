@@ -62,7 +62,7 @@ func PrintFindings(w io.Writer, findings []policy.Finding) {
 		fmt.Fprintln(w, "\nNo suspicious behaviour found.")
 		return
 	}
-	fmt.Fprintln(w, "\n--- findings (excluded from proposal unless low) ---")
+	fmt.Fprintln(w, "\n--- findings (review before approving; high/critical are excluded) ---")
 	for _, f := range findings {
 		fmt.Fprintf(w, "[%-8s] %-22s %s\n", strings.ToUpper(f.Severity), f.Kind, f.Detail)
 	}

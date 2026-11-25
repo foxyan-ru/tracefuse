@@ -39,6 +39,48 @@ func TestProposeExcludesSuspiciousBehaviour(t *testing.T) {
 	}
 }
 
+func TestProposeTrustedPrivateDestination(t *testing.T) {
+	tr := &trace.Trace{ID: "trace-tap", DurationMS: 200, Events: []trace.Event{
+		ev(trace.Exec, "python3", "/usr/bin/python3", "", ""),
+		ev(trace.NetworkConnect, "python3", "", "172.16.0.1:8080", ""),
+		ev(trace.NetworkConnect, "python3", "", "169.254.169.254:80", ""),
+	}}
+
+	// Default: a private TAP gateway is not learned.
+	p, findings := Propose(tr)
+	if contains(p.Network.Allow, "172.16.0.1:8080") {
+		t.Fatal("private destination must not be learned without operator trust")
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected a finding for the excluded private destination")
+	}
+
+	// Operator trust: the exact TAP gateway is learned with a visible finding,
+	// but metadata stays excluded no matter what is trusted.
+	p, findings = ProposeWith(tr, ProposeOptions{TrustedDestinations: []string{"172.16.0.1"}})
+	if !contains(p.Network.Allow, "172.16.0.1:8080") {
+		t.Fatalf("trusted TAP destination missing from proposal: %v", p.Network.Allow)
+	}
+	if contains(p.Network.Allow, "169.254.169.254:80") {
+		t.Fatal("metadata endpoint must never be learned, even when trusted")
+	}
+	trusted := false
+	for _, f := range findings {
+		if f.Kind == "trusted_private_destination" {
+			trusted = true
+		}
+	}
+	if !trusted {
+		t.Fatalf("expected a trusted_private_destination finding, got %v", findings)
+	}
+
+	// Port scoping: trusting the host for another port does not open 8080.
+	p, _ = ProposeWith(tr, ProposeOptions{TrustedDestinations: []string{"172.16.0.1:9090"}})
+	if contains(p.Network.Allow, "172.16.0.1:8080") {
+		t.Fatal("trust entry for a different port must not match")
+	}
+}
+
 func TestEvaluate(t *testing.T) {
 	p := &Policy{
 		Filesystem: Filesystem{Read: []string{"/workspace/**"}, Write: []string{"/tmp/**"}, Deny: BaselineDenyFiles},

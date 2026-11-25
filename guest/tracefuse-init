@@ -16,6 +16,7 @@ mkdir -p /workspace && mount /dev/vdb /workspace
 
 TF=/workspace/.tracefuse
 MODE=$(cat $TF/mode 2>/dev/null || echo observe)
+MOCK_HOST=$(cat $TF/mock_host 2>/dev/null || echo 127.0.0.1)
 emit() { while IFS= read -r l; do echo "TFEVT $l"; done; }
 
 ip link set lo up
@@ -42,7 +43,7 @@ POLICY=""
 sh -c 'echo $$ > /sys/fs/cgroup/workload/cgroup.procs; exec "$@"' _ \
   env -i PATH=/usr/bin:/bin HOME=/tmp TMPDIR=/tmp \
       TF_MODE="$MODE" TF_POLICY="$POLICY" TF_WORKSPACE=/workspace TF_TMP=/tmp \
-      TF_EVENTS=/tmp/.tf-agent.jsonl TF_REQUIRE_SECCOMP=1 \
+      TF_EVENTS=/tmp/.tf-agent.jsonl TF_REQUIRE_SECCOMP=1 TF_MOCK_HOST="$MOCK_HOST" \
   python3 -I -B /opt/tracefuse/tracer.py /workspace/main.py > /tmp/.tf-out 2>&1
 RC=$?
 
