@@ -1,0 +1,9 @@
+bin/
+.tracefuse/
+guest/out/
+coverage.out
+coverage.txt
+test.log
+demo.log
+__pycache__/
+*.pyc

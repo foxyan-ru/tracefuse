@@ -1,0 +1,90 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: build + vet + test coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test with coverage
+        run: |
+          set -o pipefail
+          go test ./... -count=1 -covermode=atomic -coverprofile=coverage.out -v | tee test.log
+          go tool cover -func=coverage.out | tee coverage.txt
+          echo "### Coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -n 25 coverage.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: python syntax
+        run: python3 -m py_compile internal/sandbox/tracer.py demos/*.py
+
+      - name: shell syntax
+        run: bash -n scripts/*.sh guest/build-rootfs.sh
+
+      - name: upload coverage and test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage.out
+            coverage.txt
+            test.log
+          if-no-files-found: warn
+
+  demo:
+    name: end-to-end demo (local backend)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+
+      - name: python availability
+        run: python3 --version
+
+      - name: make demo
+        run: |
+          set -o pipefail
+          make demo 2>&1 | tee demo.log
+
+      - name: demo evidence
+        if: always()
+        run: |
+          echo "### Demo evidence" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -E "== |trace:|backend|BLOCKED|findings|Proposed policy|Approved|Behavioural regression|No behavioural|blocked actions|sandbox destroyed|TraceFuse blocked" demo.log | sed 's/\x1b\[[0-9;]*m//g' >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: upload demo log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-log
+          path: demo.log
+          if-no-files-found: warn

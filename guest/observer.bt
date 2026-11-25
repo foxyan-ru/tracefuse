@@ -1,0 +1,60 @@
+#!/usr/bin/env bpftrace
+// TraceFuse guest observer. Runs INSIDE the microVM, next to the workload.
+// Emits one JSON object per line; init prefixes each with "TFEVT ".
+// Filtered to the workload cgroup so init/observer noise is excluded.
+// Needs a guest kernel with BTF + tracepoints (CONFIG_DEBUG_INFO_BTF=y).
+// MVP caveat: paths containing quotes are not JSON-escaped.
+
+tracepoint:syscalls:sys_enter_execve
+/cgroup == cgroupid("/sys/fs/cgroup/workload")/
+{
+  printf("{\"event\":\"exec\",\"source\":\"ebpf\",\"process\":\"%s\",\"pid\":%d,\"path\":\"%s\"}\n",
+         comm, pid, str(args->filename));
+}
+
+tracepoint:syscalls:sys_enter_openat
+/cgroup == cgroupid("/sys/fs/cgroup/workload")/
+{
+  printf("{\"event\":\"file_open\",\"source\":\"ebpf\",\"process\":\"%s\",\"pid\":%d,\"path\":\"%s\",\"flags\":\"%d\"}\n",
+         comm, pid, str(args->filename), args->flags);
+}
+
+tracepoint:syscalls:sys_enter_connect
+/cgroup == cgroupid("/sys/fs/cgroup/workload")/
+{
+  $sa = (struct sockaddr_in *)args->uservaddr;
+  if ($sa->sin_family == 2) {
+    printf("{\"event\":\"network_connect\",\"source\":\"ebpf\",\"process\":\"%s\",\"pid\":%d,\"destination\":\"%s:%d\"}\n",
+           comm, pid, ntop(2, $sa->sin_addr.s_addr), (($sa->sin_port & 0xff) << 8) | ($sa->sin_port >> 8));
+  }
+}
+
+tracepoint:syscalls:sys_enter_setuid,
+tracepoint:syscalls:sys_enter_setgid,
+tracepoint:syscalls:sys_enter_capset
+/cgroup == cgroupid("/sys/fs/cgroup/workload")/
+{
+  printf("{\"event\":\"priv_change\",\"source\":\"ebpf\",\"process\":\"%s\",\"pid\":%d,\"path\":\"%s\"}\n", comm, pid, probe);
+}
+
+tracepoint:syscalls:sys_enter_mount
+/cgroup == cgroupid("/sys/fs/cgroup/workload")/
+{
+  printf("{\"event\":\"mount\",\"source\":\"ebpf\",\"process\":\"%s\",\"pid\":%d,\"path\":\"%s\"}\n", comm, pid, str(args->dir_name));
+}
+
+// First use of each syscall number by the workload -> seccomp allowlist.
+tracepoint:raw_syscalls:sys_enter
+/cgroup == cgroupid("/sys/fs/cgroup/workload") && @seen[args->id] == 0/
+{
+  @seen[args->id] = 1;
+  printf("{\"event\":\"syscall\",\"source\":\"ebpf\",\"process\":\"%s\",\"pid\":%d,\"syscall_nr\":%d}\n", comm, pid, args->id);
+}
+
+tracepoint:sched:sched_process_exit
+/cgroup == cgroupid("/sys/fs/cgroup/workload")/
+{
+  printf("{\"event\":\"process_exit\",\"source\":\"ebpf\",\"process\":\"%s\",\"pid\":%d}\n", comm, pid);
+}
+
+END { clear(@seen); }
