@@ -41,7 +41,7 @@ jobs:
         run: python3 -m py_compile internal/sandbox/tracer.py demos/*.py
 
       - name: shell syntax
-        run: bash -n scripts/*.sh guest/build-rootfs.sh
+        run: bash -n scripts/*.sh guest/build-rootfs.sh guest/tracefuse-init
 
       - name: upload coverage and test log
         if: always()
