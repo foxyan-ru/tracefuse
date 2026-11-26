@@ -12,7 +12,7 @@ import (
 func (p *Policy) NetworkArtifacts() (rules, hosts string, err error) {
 	var b, h strings.Builder
 	b.WriteString("flush ruleset\n")
-	b.WriteString("table inet tracefuse {\n  chain output {\n")
+	b.WriteString("table ip tracefuse {\n  chain output {\n")
 	b.WriteString("    type filter hook output priority 0; policy drop;\n")
 	b.WriteString("    oif \"lo\" accept\n")
 	b.WriteString("    ct state established,related accept\n")

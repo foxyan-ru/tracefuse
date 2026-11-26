@@ -5,7 +5,7 @@
 # write a distro builder. The kernel must be uncompressed (vmlinux) and built
 # with at least:
 #   CONFIG_DEBUG_INFO_BTF=y CONFIG_BPF_EVENTS=y CONFIG_BPF_SYSCALL=y
-#   CONFIG_FTRACE=y CONFIG_NF_TABLES=y CONFIG_NF_TABLES_INET=y
+#   CONFIG_FTRACE=y CONFIG_NF_TABLES=y CONFIG_NF_TABLES_IPV4=y
 #   CONFIG_CGROUPS=y CONFIG_MEMCG=y CONFIG_CGROUP_PIDS=y
 #   CONFIG_SECCOMP=y CONFIG_SECCOMP_FILTER=y CONFIG_EXT4_FS=y
 #   CONFIG_VIRTIO_BLK=y CONFIG_VIRTIO_NET=y
@@ -14,6 +14,10 @@
 # Usage:
 #   BASE_ROOTFS=ubuntu.ext4 KERNEL=vmlinux ./guest/build-rootfs.sh
 set -euo pipefail
+: "${BASE_ROOTFS:?set BASE_ROOTFS to an ubuntu ext4 image}"
+: "${KERNEL:?set KERNEL to an uncompressed vmlinux with BTF enabled}"
+BASE_ROOTFS=$(cd "$(dirname "$BASE_ROOTFS")" && pwd)/$(basename "$BASE_ROOTFS")
+KERNEL=$(cd "$(dirname "$KERNEL")" && pwd)/$(basename "$KERNEL")
 cd "$(dirname "$0")"
 OUT=out
 
@@ -21,8 +25,6 @@ need() {
   command -v "$1" >/dev/null 2>&1 || { echo "missing host tool: $1" >&2; exit 1; }
 }
 
-: "${BASE_ROOTFS:?set BASE_ROOTFS to an ubuntu ext4 image}"
-: "${KERNEL:?set KERNEL to an uncompressed vmlinux with BTF enabled}"
 [ -f "$BASE_ROOTFS" ] || { echo "BASE_ROOTFS not found: $BASE_ROOTFS" >&2; exit 1; }
 [ -f "$KERNEL" ] || { echo "KERNEL not found: $KERNEL" >&2; exit 1; }
 
